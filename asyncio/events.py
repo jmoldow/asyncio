@@ -1,22 +1,12 @@
 """Event loop and event loop policy."""
 
-__all__ = ['AbstractEventLoopPolicy',
+__all__ = [
            'AbstractEventLoop',
            'Handle', 'TimerHandle',
-           'get_event_loop_policy', 'set_event_loop_policy',
-           'get_event_loop', 'set_event_loop', 'new_event_loop',
-           'get_child_watcher', 'set_child_watcher',
-           '_set_running_loop', '_get_running_loop',
            ]
 
 import functools
-import inspect
 import reprlib
-import socket
-import subprocess
-import sys
-import threading
-import traceback
 
 
 def _format_args_and_kwargs(args, kwargs):
@@ -68,10 +58,7 @@ class Handle:
         self._args = args
         self._cancelled = False
         self._repr = None
-        if self._loop.get_debug():
-            self._source_traceback = traceback.extract_stack(sys._getframe(1))
-        else:
-            self._source_traceback = None
+        self._source_traceback = None
 
     def _repr_info(self):
         info = [self.__class__.__name__]
@@ -93,11 +80,6 @@ class Handle:
     def cancel(self):
         if not self._cancelled:
             self._cancelled = True
-            if self._loop.get_debug():
-                # Keep a representation in debug mode to keep callback and
-                # parameters. For example, to log the warning
-                # "Executing <Handle...> took 2.5 second"
-                self._repr = repr(self)
             self._callback = None
             self._args = None
 
@@ -248,12 +230,6 @@ class AbstractEventLoop:
     def call_soon_threadsafe(self, callback, *args):
         raise NotImplementedError
 
-    def run_in_executor(self, executor, func, *args):
-        raise NotImplementedError
-
-    def set_default_executor(self, executor):
-        raise NotImplementedError
-
     # Task factory.
 
     def set_task_factory(self, factory):
@@ -275,190 +251,3 @@ class AbstractEventLoop:
 
     def call_exception_handler(self, context):
         raise NotImplementedError
-
-    # Debug flag management.
-
-    def get_debug(self):
-        raise NotImplementedError
-
-    def set_debug(self, enabled):
-        raise NotImplementedError
-
-
-class AbstractEventLoopPolicy:
-    """Abstract policy for accessing the event loop."""
-
-    def get_event_loop(self):
-        """Get the event loop for the current context.
-
-        Returns an event loop object implementing the BaseEventLoop interface,
-        or raises an exception in case no event loop has been set for the
-        current context and the current policy does not specify to create one.
-
-        It should never return None."""
-        raise NotImplementedError
-
-    def set_event_loop(self, loop):
-        """Set the event loop for the current context to loop."""
-        raise NotImplementedError
-
-    def new_event_loop(self):
-        """Create and return a new event loop object according to this
-        policy's rules. If there's need to set this loop as the event loop for
-        the current context, set_event_loop must be called explicitly."""
-        raise NotImplementedError
-
-    # Child processes handling (Unix only).
-
-    def get_child_watcher(self):
-        "Get the watcher for child processes."
-        raise NotImplementedError
-
-    def set_child_watcher(self, watcher):
-        """Set the watcher for child processes."""
-        raise NotImplementedError
-
-
-class BaseDefaultEventLoopPolicy(AbstractEventLoopPolicy):
-    """Default policy implementation for accessing the event loop.
-
-    In this policy, each thread has its own event loop.  However, we
-    only automatically create an event loop by default for the main
-    thread; other threads by default have no event loop.
-
-    Other policies may have different rules (e.g. a single global
-    event loop, or automatically creating an event loop per thread, or
-    using some other notion of context to which an event loop is
-    associated).
-    """
-
-    _loop_factory = None
-
-    class _Local(threading.local):
-        _loop = None
-        _set_called = False
-
-    def __init__(self):
-        self._local = self._Local()
-
-    def get_event_loop(self):
-        """Get the event loop.
-
-        This may be None or an instance of EventLoop.
-        """
-        if (self._local._loop is None and
-            not self._local._set_called and
-            isinstance(threading.current_thread(), threading._MainThread)):
-            self.set_event_loop(self.new_event_loop())
-        if self._local._loop is None:
-            raise RuntimeError('There is no current event loop in thread %r.'
-                               % threading.current_thread().name)
-        return self._local._loop
-
-    def set_event_loop(self, loop):
-        """Set the event loop."""
-        self._local._set_called = True
-        assert loop is None or isinstance(loop, AbstractEventLoop)
-        self._local._loop = loop
-
-    def new_event_loop(self):
-        """Create a new event loop.
-
-        You must call set_event_loop() to make this the current event
-        loop.
-        """
-        return self._loop_factory()
-
-
-# Event loop policy.  The policy itself is always global, even if the
-# policy's rules say that there is an event loop per thread (or other
-# notion of context).  The default policy is installed by the first
-# call to get_event_loop_policy().
-_event_loop_policy = None
-
-# Lock for protecting the on-the-fly creation of the event loop policy.
-_lock = threading.Lock()
-
-
-# A TLS for the running event loop, used by _get_running_loop.
-class _RunningLoop(threading.local):
-    _loop = None
-_running_loop = _RunningLoop()
-
-
-def _get_running_loop():
-    """Return the running event loop or None.
-
-    This is a low-level function intended to be used by event loops.
-    This function is thread-specific.
-    """
-    return _running_loop._loop
-
-
-def _set_running_loop(loop):
-    """Set the running event loop.
-
-    This is a low-level function intended to be used by event loops.
-    This function is thread-specific.
-    """
-    _running_loop._loop = loop
-
-
-def _init_event_loop_policy():
-    global _event_loop_policy
-    with _lock:
-        if _event_loop_policy is None:  # pragma: no branch
-            from . import DefaultEventLoopPolicy
-            _event_loop_policy = DefaultEventLoopPolicy()
-
-
-def get_event_loop_policy():
-    """Get the current event loop policy."""
-    if _event_loop_policy is None:
-        _init_event_loop_policy()
-    return _event_loop_policy
-
-
-def set_event_loop_policy(policy):
-    """Set the current event loop policy.
-
-    If policy is None, the default policy is restored."""
-    global _event_loop_policy
-    assert policy is None or isinstance(policy, AbstractEventLoopPolicy)
-    _event_loop_policy = policy
-
-
-def get_event_loop():
-    """Return an asyncio event loop.
-
-    When called from a coroutine or a callback (e.g. scheduled with call_soon
-    or similar API), this function will always return the running event loop.
-
-    If there is no running event loop set, the function will return
-    the result of `get_event_loop_policy().get_event_loop()` call.
-    """
-    current_loop = _get_running_loop()
-    if current_loop is not None:
-        return current_loop
-    return get_event_loop_policy().get_event_loop()
-
-
-def set_event_loop(loop):
-    """Equivalent to calling get_event_loop_policy().set_event_loop(loop)."""
-    get_event_loop_policy().set_event_loop(loop)
-
-
-def new_event_loop():
-    """Equivalent to calling get_event_loop_policy().new_event_loop()."""
-    return get_event_loop_policy().new_event_loop()
-
-
-def get_child_watcher():
-    """Equivalent to calling get_event_loop_policy().get_child_watcher()."""
-    return get_event_loop_policy().get_child_watcher()
-
-
-def set_child_watcher(watcher):
-    """Equivalent to calling
-    get_event_loop_policy().set_child_watcher(watcher)."""
-    return get_event_loop_policy().set_child_watcher(watcher)

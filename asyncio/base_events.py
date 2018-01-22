@@ -14,14 +14,7 @@ to modify the meaning of the API call itself.
 """
 
 import collections
-import concurrent.futures
 import heapq
-import inspect
-import itertools
-import logging
-import os
-import socket
-import subprocess
 import threading
 import time
 import traceback
@@ -29,7 +22,6 @@ import sys
 import warnings
 import weakref
 
-from . import compat
 from . import coroutines
 from . import events
 from . import futures
@@ -48,129 +40,6 @@ _MIN_SCHEDULED_TIMER_HANDLES = 100
 # Minimum fraction of _scheduled timer handles that are cancelled
 # before cleanup of cancelled handles is performed.
 _MIN_CANCELLED_TIMER_HANDLES_FRACTION = 0.5
-
-# Exceptions which must not call the exception handler in fatal error
-# methods (_fatal_error())
-_FATAL_ERROR_IGNORE = (BrokenPipeError,
-                       ConnectionResetError, ConnectionAbortedError)
-
-
-def _format_handle(handle):
-    cb = handle._callback
-    if isinstance(getattr(cb, '__self__', None), tasks.Task):
-        # format the task
-        return repr(cb.__self__)
-    else:
-        return str(handle)
-
-
-def _format_pipe(fd):
-    if fd == subprocess.PIPE:
-        return '<pipe>'
-    elif fd == subprocess.STDOUT:
-        return '<stdout>'
-    else:
-        return repr(fd)
-
-
-def _set_reuseport(sock):
-    if not hasattr(socket, 'SO_REUSEPORT'):
-        raise ValueError('reuse_port not supported by socket module')
-    else:
-        try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except OSError:
-            raise ValueError('reuse_port not supported by socket module, '
-                             'SO_REUSEPORT defined but not implemented.')
-
-
-def _is_stream_socket(sock):
-    # Linux's socket.type is a bitmask that can include extra info
-    # about socket, therefore we can't do simple
-    # `sock_type == socket.SOCK_STREAM`.
-    return (sock.type & socket.SOCK_STREAM) == socket.SOCK_STREAM
-
-
-def _is_dgram_socket(sock):
-    # Linux's socket.type is a bitmask that can include extra info
-    # about socket, therefore we can't do simple
-    # `sock_type == socket.SOCK_DGRAM`.
-    return (sock.type & socket.SOCK_DGRAM) == socket.SOCK_DGRAM
-
-
-def _ipaddr_info(host, port, family, type, proto):
-    # Try to skip getaddrinfo if "host" is already an IP. Users might have
-    # handled name resolution in their own code and pass in resolved IPs.
-    if not hasattr(socket, 'inet_pton'):
-        return
-
-    if proto not in {0, socket.IPPROTO_TCP, socket.IPPROTO_UDP} or \
-            host is None:
-        return None
-
-    if type == socket.SOCK_STREAM:
-        # Linux only:
-        #    getaddrinfo() can raise when socket.type is a bit mask.
-        #    So if socket.type is a bit mask of SOCK_STREAM, and say
-        #    SOCK_NONBLOCK, we simply return None, which will trigger
-        #    a call to getaddrinfo() letting it process this request.
-        proto = socket.IPPROTO_TCP
-    elif type == socket.SOCK_DGRAM:
-        proto = socket.IPPROTO_UDP
-    else:
-        return None
-
-    if port is None:
-        port = 0
-    elif isinstance(port, bytes) and port == b'':
-        port = 0
-    elif isinstance(port, str) and port == '':
-        port = 0
-    else:
-        # If port's a service name like "http", don't skip getaddrinfo.
-        try:
-            port = int(port)
-        except (TypeError, ValueError):
-            return None
-
-    if family == socket.AF_UNSPEC:
-        afs = [socket.AF_INET]
-        if hasattr(socket, 'AF_INET6'):
-            afs.append(socket.AF_INET6)
-    else:
-        afs = [family]
-
-    if isinstance(host, bytes):
-        host = host.decode('idna')
-    if '%' in host:
-        # Linux's inet_pton doesn't accept an IPv6 zone index after host,
-        # like '::1%lo0'.
-        return None
-
-    for af in afs:
-        try:
-            socket.inet_pton(af, host)
-            # The host has already been resolved.
-            return af, type, proto, '', (host, port)
-        except OSError:
-            pass
-
-    # "host" is not an IP address.
-    return None
-
-
-def _ensure_resolved(address, *, family=0, type=socket.SOCK_STREAM, proto=0,
-                     flags=0, loop):
-    host, port = address[:2]
-    info = _ipaddr_info(host, port, family, type, proto)
-    if info is not None:
-        # "host" is already a resolved IP.
-        fut = loop.create_future()
-        fut.set_result([info])
-        return fut
-    else:
-        return loop.getaddrinfo(host, port, family=family, type=type,
-                                proto=proto, flags=flags)
 
 
 def _run_until_complete_cb(fut):
@@ -191,37 +60,17 @@ class BaseEventLoop(events.AbstractEventLoop):
         self._stopping = False
         self._ready = collections.deque()
         self._scheduled = []
-        self._default_executor = None
-        self._internal_fds = 0
         # Identifier of the thread running the event loop, or None if the
         # event loop is not running
         self._thread_id = None
         self._clock_resolution = time.get_clock_info('monotonic').resolution
         self._exception_handler = None
-        self.set_debug((not sys.flags.ignore_environment
-                        and bool(os.environ.get('PYTHONASYNCIODEBUG'))))
-        # In debug mode, if the execution of a callback or a step of a task
-        # exceed this duration in seconds, the slow callback/task is logged.
-        self.slow_callback_duration = 0.1
-        self._current_handle = None
         self._task_factory = None
-        self._coroutine_wrapper_set = False
-
-        if hasattr(sys, 'get_asyncgen_hooks'):
-            # Python >= 3.6
-            # A weak set of all asynchronous generators that are
-            # being iterated by the loop.
-            self._asyncgens = weakref.WeakSet()
-        else:
-            self._asyncgens = None
-
-        # Set to True when `loop.shutdown_asyncgens` is called.
-        self._asyncgens_shutdown_called = False
 
     def __repr__(self):
-        return ('<%s running=%s closed=%s debug=%s>'
+        return ('<%s running=%s closed=%s>'
                 % (self.__class__.__name__, self.is_running(),
-                   self.is_closed(), self.get_debug()))
+                   self.is_closed()))
 
     def create_future(self):
         """Create a Future object attached to the loop."""
@@ -271,12 +120,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         if events._get_running_loop() is not None:
             raise RuntimeError(
                 'Cannot run the event loop while another loop is running')
-        self._set_coroutine_wrapper(self._debug)
         self._thread_id = threading.get_ident()
-        if self._asyncgens is not None:
-            old_agen_hooks = sys.get_asyncgen_hooks()
-            sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter_hook,
-                                   finalizer=self._asyncgen_finalizer_hook)
         try:
             events._set_running_loop(self)
             while True:
@@ -287,9 +131,6 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._stopping = False
             self._thread_id = None
             events._set_running_loop(None)
-            self._set_coroutine_wrapper(False)
-            if self._asyncgens is not None:
-                sys.set_asyncgen_hooks(*old_agen_hooks)
 
     def run_until_complete(self, future):
         """Run until the Future is done.
@@ -347,30 +188,13 @@ class BaseEventLoop(events.AbstractEventLoop):
             raise RuntimeError("Cannot close a running event loop")
         if self._closed:
             return
-        if self._debug:
-            logger.debug("Close %r", self)
         self._closed = True
         self._ready.clear()
         self._scheduled.clear()
-        executor = self._default_executor
-        if executor is not None:
-            self._default_executor = None
-            executor.shutdown(wait=False)
 
     def is_closed(self):
         """Returns True if the event loop was closed."""
         return self._closed
-
-    # On Python 3.3 and older, objects with a destructor part of a reference
-    # cycle are never destroyed. It's not more the case on Python 3.4 thanks
-    # to the PEP 442.
-    if compat.PY34:
-        def __del__(self):
-            if not self.is_closed():
-                warnings.warn("unclosed event loop %r" % self, ResourceWarning,
-                              source=self)
-                if not self.is_running():
-                    self.close()
 
     def is_running(self):
         """Returns True if the event loop is running."""
@@ -412,9 +236,6 @@ class BaseEventLoop(events.AbstractEventLoop):
         Absolute time corresponds to the event loop's time() method.
         """
         self._check_closed()
-        if self._debug:
-            self._check_thread()
-            self._check_callback(callback, 'call_at')
         timer = events.TimerHandle(when, callback, args, self)
         if timer._source_traceback:
             del timer._source_traceback[-1]
@@ -433,24 +254,10 @@ class BaseEventLoop(events.AbstractEventLoop):
         the callback when it is called.
         """
         self._check_closed()
-        if self._debug:
-            self._check_thread()
-            self._check_callback(callback, 'call_soon')
         handle = self._call_soon(callback, args)
         if handle._source_traceback:
             del handle._source_traceback[-1]
         return handle
-
-    def _check_callback(self, callback, method):
-        if (coroutines.iscoroutine(callback) or
-                coroutines.iscoroutinefunction(callback)):
-            raise TypeError(
-                "coroutines cannot be used with {}()".format(method))
-        if not callable(callback):
-            raise TypeError(
-                'a callable object was expected by {}(), got {!r}'.format(
-                    method, callback))
-
 
     def _call_soon(self, callback, args):
         handle = events.Handle(callback, args, self)
@@ -459,47 +266,14 @@ class BaseEventLoop(events.AbstractEventLoop):
         self._ready.append(handle)
         return handle
 
-    def _check_thread(self):
-        """Check that the current thread is the thread running the event loop.
-
-        Non-thread-safe methods of this class make this assumption and will
-        likely behave incorrectly when the assumption is violated.
-
-        Should only be called when (self._debug == True).  The caller is
-        responsible for checking this condition for performance reasons.
-        """
-        if self._thread_id is None:
-            return
-        thread_id = threading.get_ident()
-        if thread_id != self._thread_id:
-            raise RuntimeError(
-                "Non-thread-safe operation invoked on an event loop other "
-                "than the current one")
-
     def call_soon_threadsafe(self, callback, *args):
         """Like call_soon(), but thread-safe."""
         self._check_closed()
-        if self._debug:
-            self._check_callback(callback, 'call_soon_threadsafe')
         handle = self._call_soon(callback, args)
         if handle._source_traceback:
             del handle._source_traceback[-1]
         self._write_to_self()
         return handle
-
-    def run_in_executor(self, executor, func, *args):
-        self._check_closed()
-        if self._debug:
-            self._check_callback(func, 'run_in_executor')
-        if executor is None:
-            executor = self._default_executor
-            if executor is None:
-                executor = concurrent.futures.ThreadPoolExecutor()
-                self._default_executor = executor
-        return futures.wrap_future(executor.submit(func, *args), loop=self)
-
-    def set_default_executor(self, executor):
-        self._default_executor = executor
 
     def get_exception_handler(self):
         """Return an exception handler, or None if the default one is in use.
@@ -542,11 +316,6 @@ class BaseEventLoop(events.AbstractEventLoop):
             exc_info = (type(exception), exception, exception.__traceback__)
         else:
             exc_info = False
-
-        if ('source_traceback' not in context
-        and self._current_handle is not None
-        and self._current_handle._source_traceback):
-            context['handle_traceback'] = self._current_handle._source_traceback
 
         log_lines = [message]
         for key in sorted(context):
@@ -617,19 +386,6 @@ class BaseEventLoop(events.AbstractEventLoop):
                                  'in custom exception handler',
                                  exc_info=True)
 
-    def _add_callback(self, handle):
-        """Add a Handle to _scheduled (TimerHandle) or _ready."""
-        assert isinstance(handle, events.Handle), 'A Handle is required here'
-        if handle._cancelled:
-            return
-        assert not isinstance(handle, events.TimerHandle)
-        self._ready.append(handle)
-
-    def _add_callback_signalsafe(self, handle):
-        """Like _add_callback() but called from a signal handler."""
-        self._add_callback(handle)
-        self._write_to_self()
-
     def _timer_handle_cancelled(self, handle):
         """Notification that a TimerHandle has been cancelled."""
         if handle._scheduled:
@@ -674,28 +430,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             when = self._scheduled[0]._when
             timeout = max(0, when - self.time())
 
-        if self._debug and timeout != 0:
-            t0 = self.time()
-            event_list = self._selector.select(timeout)
-            dt = self.time() - t0
-            if dt >= 1.0:
-                level = logging.INFO
-            else:
-                level = logging.DEBUG
-            nevent = len(event_list)
-            if timeout is None:
-                logger.log(level, 'poll took %.3f ms: %s events',
-                           dt * 1e3, nevent)
-            elif nevent:
-                logger.log(level,
-                           'poll %.3f ms took %.3f ms: %s events',
-                           timeout * 1e3, dt * 1e3, nevent)
-            elif dt >= 1.0:
-                logger.log(level,
-                           'poll %.3f ms took %.3f ms: timeout',
-                           timeout * 1e3, dt * 1e3)
-        else:
-            event_list = self._selector.select(timeout)
+        event_list = self._selector.select(timeout)
         self._process_events(event_list)
 
         # Handle 'later' callbacks that are ready.
@@ -719,59 +454,5 @@ class BaseEventLoop(events.AbstractEventLoop):
             handle = self._ready.popleft()
             if handle._cancelled:
                 continue
-            if self._debug:
-                try:
-                    self._current_handle = handle
-                    t0 = self.time()
-                    handle._run()
-                    dt = self.time() - t0
-                    if dt >= self.slow_callback_duration:
-                        logger.warning('Executing %s took %.3f seconds',
-                                       _format_handle(handle), dt)
-                finally:
-                    self._current_handle = None
-            else:
-                handle._run()
+            handle._run()
         handle = None  # Needed to break cycles when an exception occurs.
-
-    def _set_coroutine_wrapper(self, enabled):
-        try:
-            set_wrapper = sys.set_coroutine_wrapper
-            get_wrapper = sys.get_coroutine_wrapper
-        except AttributeError:
-            return
-
-        enabled = bool(enabled)
-        if self._coroutine_wrapper_set == enabled:
-            return
-
-        wrapper = coroutines.debug_wrapper
-        current_wrapper = get_wrapper()
-
-        if enabled:
-            if current_wrapper not in (None, wrapper):
-                warnings.warn(
-                    "loop.set_debug(True): cannot set debug coroutine "
-                    "wrapper; another wrapper is already set %r" %
-                    current_wrapper, RuntimeWarning)
-            else:
-                set_wrapper(wrapper)
-                self._coroutine_wrapper_set = True
-        else:
-            if current_wrapper not in (None, wrapper):
-                warnings.warn(
-                    "loop.set_debug(False): cannot unset debug coroutine "
-                    "wrapper; another wrapper was set %r" %
-                    current_wrapper, RuntimeWarning)
-            else:
-                set_wrapper(None)
-                self._coroutine_wrapper_set = False
-
-    def get_debug(self):
-        return self._debug
-
-    def set_debug(self, enabled):
-        self._debug = enabled
-
-        if self.is_running():
-            self._set_coroutine_wrapper(enabled)
