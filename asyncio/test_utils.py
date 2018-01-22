@@ -195,21 +195,6 @@ if hasattr(socket, 'AF_UNIX'):
                 pass
 
 
-    @contextlib.contextmanager
-    def run_test_unix_server(*, use_ssl=False):
-        with unix_socket_path() as path:
-            yield from _run_test_server(address=path, use_ssl=use_ssl,
-                                        server_cls=SilentUnixWSGIServer,
-                                        server_ssl_cls=UnixSSLWSGIServer)
-
-
-@contextlib.contextmanager
-def run_test_server(*, host='127.0.0.1', port=0, use_ssl=False):
-    yield from _run_test_server(address=(host, port), use_ssl=use_ssl,
-                                server_cls=SilentWSGIServer,
-                                server_ssl_cls=SSLWSGIServer)
-
-
 def make_test_protocol(base):
     dct = {}
     for name in dir(base):
