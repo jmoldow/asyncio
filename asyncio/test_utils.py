@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import time
-from unittest import mock
+import mock
 
 from http.server import HTTPServer
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer

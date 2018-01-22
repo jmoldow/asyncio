@@ -3,7 +3,7 @@
 import concurrent.futures
 import threading
 import unittest
-from unittest import mock
+import mock
 
 import asyncio
 from asyncio import test_utils

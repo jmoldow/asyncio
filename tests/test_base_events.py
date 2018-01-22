@@ -6,7 +6,7 @@ import socket
 import sys
 import time
 import unittest
-from unittest import mock
+import mock
 from test.support import IPV6_ENABLED
 
 import asyncio
@@ -230,13 +230,16 @@ class BaseEventLoopTests(unittest.TestCase):
     @mock.patch('asyncio.base_events.logger')
     def test__run_once_logging(self, m_logger, m_time):
         # Log to INFO level if timeout > 1.0 sec.
+        non_local = dict(
         idx = -1
+        ,
         data = [10.0, 10.0, 12.0, 13.0]
+        ,
+        )
 
         def monotonic():
-            nonlocal data, idx
-            idx += 1
-            return data[idx]
+            non_local['idx'] += 1
+            return non_local['data'][non_local['idx']]
 
         m_time.monotonic = monotonic
 
@@ -246,21 +249,24 @@ class BaseEventLoopTests(unittest.TestCase):
         self.loop._run_once()
         self.assertEqual(logging.INFO, m_logger.log.call_args[0][0])
 
-        idx = -1
-        data = [10.0, 10.0, 10.3, 13.0]
+        non_local['idx'] = -1
+        non_local['data'] = [10.0, 10.0, 10.3, 13.0]
         self.loop._scheduled = [asyncio.TimerHandle(11.0, lambda: True, (),
                                                     self.loop)]
         self.loop._run_once()
         self.assertEqual(logging.DEBUG, m_logger.log.call_args[0][0])
 
     def test__run_once_schedule_handle(self):
+        non_local = dict(
         handle = None
+        ,
         processed = False
+        ,
+        )
 
         def cb(loop):
-            nonlocal processed, handle
-            processed = True
-            handle = loop.call_soon(lambda: True)
+            non_local['processed'] = True
+            non_local['handle'] = loop.call_soon(lambda: True)
 
         h = asyncio.TimerHandle(time.monotonic() - 1, cb, (self.loop,),
                                 self.loop)
@@ -269,8 +275,8 @@ class BaseEventLoopTests(unittest.TestCase):
         self.loop._scheduled.append(h)
         self.loop._run_once()
 
-        self.assertTrue(processed)
-        self.assertEqual([handle], list(self.loop._ready))
+        self.assertTrue(non_local['processed'])
+        self.assertEqual([non_local['handle']], list(self.loop._ready))
 
     def test_run_until_complete_type_error(self):
         self.assertRaises(TypeError,
@@ -436,7 +442,10 @@ class BaseEventLoopTests(unittest.TestCase):
                 exc_info=(AttributeError, MOCK_ANY, MOCK_ANY))
 
     def test_default_exc_handler_broken(self):
+        non_local = dict(
         _context = None
+        ,
+        )
 
         class Loop(base_events.BaseEventLoop):
 
@@ -444,8 +453,7 @@ class BaseEventLoopTests(unittest.TestCase):
             _process_events = mock.Mock()
 
             def default_exception_handler(self, context):
-                nonlocal _context
-                _context = context
+                non_local['_context'] = context
                 # Simulates custom buggy "default_exception_handler"
                 raise ValueError('spam')
 
@@ -467,7 +475,7 @@ class BaseEventLoopTests(unittest.TestCase):
         def custom_handler(loop, context):
             raise ValueError('ham')
 
-        _context = None
+        non_local['_context'] = None
         loop.set_exception_handler(custom_handler)
         with mock.patch('asyncio.base_events.logger') as log:
             run_loop()
@@ -478,8 +486,8 @@ class BaseEventLoopTests(unittest.TestCase):
 
             # Check that original context was passed to default
             # exception handler.
-            self.assertIn('context', _context)
-            self.assertIs(type(_context['context']['exception']),
+            self.assertIn('context', non_local['_context'])
+            self.assertIs(type(non_local['_context']['context']['exception']),
                           ZeroDivisionError)
 
 
