@@ -2,18 +2,16 @@
 
 __all__ = ['Task',
            'FIRST_COMPLETED', 'FIRST_EXCEPTION', 'ALL_COMPLETED',
-           'wait', 'wait_for', 'as_completed', 'sleep', 'async',
+           'wait', 'wait_for', 'sleep',
            'gather', 'shield', 'ensure_future', 'run_coroutine_threadsafe',
            ]
 
 import concurrent.futures
 import functools
 import inspect
-import warnings
 import weakref
 
 from . import base_tasks
-from . import compat
 from . import coroutines
 from . import events
 from . import futures
@@ -75,21 +73,6 @@ class Task(futures.Future):
         self._must_cancel = False
         self._loop.call_soon(self._step)
         self.__class__._all_tasks.add(self)
-
-    # On Python 3.3 or older, objects with a destructor that are part of a
-    # reference cycle are never destroyed. That's not the case any more on
-    # Python 3.4 thanks to the PEP 442.
-    if compat.PY34:
-        def __del__(self):
-            if self._state == futures._PENDING and self._log_destroy_pending:
-                context = {
-                    'task': self,
-                    'message': 'Task was destroyed but it is pending!',
-                }
-                if self._source_traceback:
-                    context['source_traceback'] = self._source_traceback
-                self._loop.call_exception_handler(context)
-            futures.Future.__del__(self)
 
     def _repr_info(self):
         return base_tasks._task_repr_info(self)
@@ -259,15 +242,6 @@ class Task(futures.Future):
 _PyTask = Task
 
 
-try:
-    import _asyncio
-except ImportError:
-    pass
-else:
-    # _CTask is needed for tests.
-    Task = _CTask = _asyncio.Task
-
-
 # wait() and as_completed() similar to those in PEP 3148.
 
 FIRST_COMPLETED = concurrent.futures.FIRST_COMPLETED
@@ -402,63 +376,6 @@ def _wait(fs, timeout, return_when, loop):
     return done, pending
 
 
-# This is *not* a @coroutine!  It is just an iterator (yielding Futures).
-def as_completed(fs, *, loop=None, timeout=None):
-    """Return an iterator whose values are coroutines.
-
-    When waiting for the yielded coroutines you'll get the results (or
-    exceptions!) of the original Futures (or coroutines), in the order
-    in which and as soon as they complete.
-
-    This differs from PEP 3148; the proper way to use this is:
-
-        for f in as_completed(fs):
-            result = yield from f  # The 'yield from' may raise.
-            # Use result.
-
-    If a timeout is specified, the 'yield from' will raise
-    TimeoutError when the timeout occurs before all Futures are done.
-
-    Note: The futures 'f' are not necessarily members of fs.
-    """
-    if futures.isfuture(fs) or coroutines.iscoroutine(fs):
-        raise TypeError("expect a list of futures, not %s" % type(fs).__name__)
-    loop = loop if loop is not None else events.get_event_loop()
-    todo = {ensure_future(f, loop=loop) for f in set(fs)}
-    from .queues import Queue  # Import here to avoid circular import problem.
-    done = Queue(loop=loop)
-    timeout_handle = None
-
-    def _on_timeout():
-        for f in todo:
-            f.remove_done_callback(_on_completion)
-            done.put_nowait(None)  # Queue a dummy value for _wait_for_one().
-        todo.clear()  # Can't do todo.remove(f) in the loop.
-
-    def _on_completion(f):
-        if not todo:
-            return  # _on_timeout() was here first.
-        todo.remove(f)
-        done.put_nowait(f)
-        if not todo and timeout_handle is not None:
-            timeout_handle.cancel()
-
-    @coroutine
-    def _wait_for_one():
-        f = yield from done.get()
-        if f is None:
-            # Dummy value from _on_timeout().
-            raise futures.TimeoutError
-        return f.result()  # May raise f.exception().
-
-    for f in todo:
-        f.add_done_callback(_on_completion)
-    if todo and timeout is not None:
-        timeout_handle = loop.call_later(timeout, _on_timeout)
-    for _ in range(len(todo)):
-        yield _wait_for_one()
-
-
 @coroutine
 def sleep(delay, result=None, *, loop=None):
     """Coroutine that completes after a given time (in seconds)."""
@@ -478,25 +395,6 @@ def sleep(delay, result=None, *, loop=None):
         h.cancel()
 
 
-def async_(coro_or_future, *, loop=None):
-    """Wrap a coroutine in a future.
-
-    If the argument is a Future, it is returned directly.
-
-    This function is deprecated in 3.5. Use asyncio.ensure_future() instead.
-    """
-
-    warnings.warn("asyncio.async() function is deprecated, use ensure_future()",
-                  DeprecationWarning)
-
-    return ensure_future(coro_or_future, loop=loop)
-
-# Silence DeprecationWarning:
-globals()['async'] = async_
-async_.__name__ = 'async'
-del async_
-
-
 def ensure_future(coro_or_future, *, loop=None):
     """Wrap a coroutine or an awaitable in a future.
 
@@ -513,20 +411,8 @@ def ensure_future(coro_or_future, *, loop=None):
         if task._source_traceback:
             del task._source_traceback[-1]
         return task
-    elif compat.PY35 and inspect.isawaitable(coro_or_future):
-        return ensure_future(_wrap_awaitable(coro_or_future), loop=loop)
     else:
         raise TypeError('A Future, a coroutine or an awaitable is required')
-
-
-@coroutine
-def _wrap_awaitable(awaitable):
-    """Helper for asyncio.ensure_future().
-
-    Wraps awaitable (an object with __await__) into a coroutine
-    that will later be wrapped in a Task by ensure_future().
-    """
-    return (yield from awaitable.__await__())
 
 
 class _GatheringFuture(futures.Future):
