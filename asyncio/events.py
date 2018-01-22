@@ -194,18 +194,6 @@ class TimerHandle(Handle):
         super().cancel()
 
 
-class AbstractServer:
-    """Abstract server returned by create_server()."""
-
-    def close(self):
-        """Stop serving.  This leaves existing connections open."""
-        return NotImplemented
-
-    def wait_closed(self):
-        """Coroutine to wait until service is closed."""
-        return NotImplemented
-
-
 class AbstractEventLoop:
     """Abstract event loop."""
 
@@ -298,52 +286,6 @@ class AbstractEventLoop:
     def getnameinfo(self, sockaddr, flags=0):
         raise NotImplementedError
 
-    def create_connection(self, protocol_factory, host=None, port=None, *,
-                          ssl=None, family=0, proto=0, flags=0, sock=None,
-                          local_addr=None, server_hostname=None):
-        raise NotImplementedError
-
-    def create_server(self, protocol_factory, host=None, port=None, *,
-                      family=socket.AF_UNSPEC, flags=socket.AI_PASSIVE,
-                      sock=None, backlog=100, ssl=None, reuse_address=None,
-                      reuse_port=None):
-        """A coroutine which creates a TCP server bound to host and port.
-
-        The return value is a Server object which can be used to stop
-        the service.
-
-        If host is an empty string or None all interfaces are assumed
-        and a list of multiple sockets will be returned (most likely
-        one for IPv4 and another one for IPv6). The host parameter can also be a
-        sequence (e.g. list) of hosts to bind to.
-
-        family can be set to either AF_INET or AF_INET6 to force the
-        socket to use IPv4 or IPv6. If not set it will be determined
-        from host (defaults to AF_UNSPEC).
-
-        flags is a bitmask for getaddrinfo().
-
-        sock can optionally be specified in order to use a preexisting
-        socket object.
-
-        backlog is the maximum number of queued connections passed to
-        listen() (defaults to 100).
-
-        ssl can be set to an SSLContext to enable SSL over the
-        accepted connections.
-
-        reuse_address tells the kernel to reuse a local socket in
-        TIME_WAIT state, without waiting for its natural timeout to
-        expire. If not specified will automatically be set to True on
-        UNIX.
-
-        reuse_port tells the kernel to allow this endpoint to be bound to
-        the same port as other existing endpoints are bound to, so long as
-        they all set this flag when being created. This option is not
-        supported on Windows.
-        """
-        raise NotImplementedError
-
     def create_unix_connection(self, protocol_factory, path, *,
                                ssl=None, sock=None,
                                server_hostname=None):
@@ -368,79 +310,6 @@ class AbstractEventLoop:
         ssl can be set to an SSLContext to enable SSL over the
         accepted connections.
         """
-        raise NotImplementedError
-
-    def create_datagram_endpoint(self, protocol_factory,
-                                 local_addr=None, remote_addr=None, *,
-                                 family=0, proto=0, flags=0,
-                                 reuse_address=None, reuse_port=None,
-                                 allow_broadcast=None, sock=None):
-        """A coroutine which creates a datagram endpoint.
-
-        This method will try to establish the endpoint in the background.
-        When successful, the coroutine returns a (transport, protocol) pair.
-
-        protocol_factory must be a callable returning a protocol instance.
-
-        socket family AF_INET or socket.AF_INET6 depending on host (or
-        family if specified), socket type SOCK_DGRAM.
-
-        reuse_address tells the kernel to reuse a local socket in
-        TIME_WAIT state, without waiting for its natural timeout to
-        expire. If not specified it will automatically be set to True on
-        UNIX.
-
-        reuse_port tells the kernel to allow this endpoint to be bound to
-        the same port as other existing endpoints are bound to, so long as
-        they all set this flag when being created. This option is not
-        supported on Windows and some UNIX's. If the
-        :py:data:`~socket.SO_REUSEPORT` constant is not defined then this
-        capability is unsupported.
-
-        allow_broadcast tells the kernel to allow this endpoint to send
-        messages to the broadcast address.
-
-        sock can optionally be specified in order to use a preexisting
-        socket object.
-        """
-        raise NotImplementedError
-
-    # Pipes and subprocesses.
-
-    def connect_read_pipe(self, protocol_factory, pipe):
-        """Register read pipe in event loop. Set the pipe to non-blocking mode.
-
-        protocol_factory should instantiate object with Protocol interface.
-        pipe is a file-like object.
-        Return pair (transport, protocol), where transport supports the
-        ReadTransport interface."""
-        # The reason to accept file-like object instead of just file descriptor
-        # is: we need to own pipe and close it at transport finishing
-        # Can got complicated errors if pass f.fileno(),
-        # close fd in pipe transport then close f and vise versa.
-        raise NotImplementedError
-
-    def connect_write_pipe(self, protocol_factory, pipe):
-        """Register write pipe in event loop.
-
-        protocol_factory should instantiate object with BaseProtocol interface.
-        Pipe is file-like object already switched to nonblocking.
-        Return pair (transport, protocol), where transport support
-        WriteTransport interface."""
-        # The reason to accept file-like object instead of just file descriptor
-        # is: we need to own pipe and close it at transport finishing
-        # Can got complicated errors if pass f.fileno(),
-        # close fd in pipe transport then close f and vise versa.
-        raise NotImplementedError
-
-    def subprocess_shell(self, protocol_factory, cmd, *, stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         **kwargs):
-        raise NotImplementedError
-
-    def subprocess_exec(self, protocol_factory, *args, stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        **kwargs):
         raise NotImplementedError
 
     # Ready-based callback registration methods.
