@@ -259,100 +259,9 @@ class BaseEventLoop(events.AbstractEventLoop):
         """Return a task factory, or None if the default one is in use."""
         return self._task_factory
 
-    def _make_socket_transport(self, sock, protocol, waiter=None, *,
-                               extra=None, server=None):
-        """Create socket transport."""
-        raise NotImplementedError
-
-    def _make_ssl_transport(self, rawsock, protocol, sslcontext, waiter=None,
-                            *, server_side=False, server_hostname=None,
-                            extra=None, server=None):
-        """Create SSL transport."""
-        raise NotImplementedError
-
-    def _make_datagram_transport(self, sock, protocol,
-                                 address=None, waiter=None, extra=None):
-        """Create datagram transport."""
-        raise NotImplementedError
-
-    def _make_read_pipe_transport(self, pipe, protocol, waiter=None,
-                                  extra=None):
-        """Create read pipe transport."""
-        raise NotImplementedError
-
-    def _make_write_pipe_transport(self, pipe, protocol, waiter=None,
-                                   extra=None):
-        """Create write pipe transport."""
-        raise NotImplementedError
-
-    @coroutine
-    def _make_subprocess_transport(self, protocol, args, shell,
-                                   stdin, stdout, stderr, bufsize,
-                                   extra=None, **kwargs):
-        """Create subprocess transport."""
-        raise NotImplementedError
-
-    def _write_to_self(self):
-        """Write a byte to self-pipe, to wake up the event loop.
-
-        This may be called from a different thread.
-
-        The subclass is responsible for implementing the self-pipe.
-        """
-        raise NotImplementedError
-
-    def _process_events(self, event_list):
-        """Process selector events."""
-        raise NotImplementedError
-
     def _check_closed(self):
         if self._closed:
             raise RuntimeError('Event loop is closed')
-
-    def _asyncgen_finalizer_hook(self, agen):
-        self._asyncgens.discard(agen)
-        if not self.is_closed():
-            self.create_task(agen.aclose())
-            # Wake up the loop if the finalizer was called from
-            # a different thread.
-            self._write_to_self()
-
-    def _asyncgen_firstiter_hook(self, agen):
-        if self._asyncgens_shutdown_called:
-            warnings.warn(
-                "asynchronous generator {!r} was scheduled after "
-                "loop.shutdown_asyncgens() call".format(agen),
-                ResourceWarning, source=self)
-
-        self._asyncgens.add(agen)
-
-    @coroutine
-    def shutdown_asyncgens(self):
-        """Shutdown all active asynchronous generators."""
-        self._asyncgens_shutdown_called = True
-
-        if self._asyncgens is None or not len(self._asyncgens):
-            # If Python version is <3.6 or we don't have any asynchronous
-            # generators alive.
-            return
-
-        closing_agens = list(self._asyncgens)
-        self._asyncgens.clear()
-
-        shutdown_coro = tasks.gather(
-            *[ag.aclose() for ag in closing_agens],
-            return_exceptions=True,
-            loop=self)
-
-        results = yield from shutdown_coro
-        for result, agen in zip(results, closing_agens):
-            if isinstance(result, Exception):
-                self.call_exception_handler({
-                    'message': 'an error occurred during closing of '
-                               'asynchronous generator {!r}'.format(agen),
-                    'exception': result,
-                    'asyncgen': agen
-                })
 
     def run_forever(self):
         """Run until stop() is called."""
@@ -591,56 +500,6 @@ class BaseEventLoop(events.AbstractEventLoop):
 
     def set_default_executor(self, executor):
         self._default_executor = executor
-
-    def _getaddrinfo_debug(self, host, port, family, type, proto, flags):
-        msg = ["%s:%r" % (host, port)]
-        if family:
-            msg.append('family=%r' % family)
-        if type:
-            msg.append('type=%r' % type)
-        if proto:
-            msg.append('proto=%r' % proto)
-        if flags:
-            msg.append('flags=%r' % flags)
-        msg = ', '.join(msg)
-        logger.debug('Get address info %s', msg)
-
-        t0 = self.time()
-        addrinfo = socket.getaddrinfo(host, port, family, type, proto, flags)
-        dt = self.time() - t0
-
-        msg = ('Getting address info %s took %.3f ms: %r'
-               % (msg, dt * 1e3, addrinfo))
-        if dt >= self.slow_callback_duration:
-            logger.info(msg)
-        else:
-            logger.debug(msg)
-        return addrinfo
-
-    def getaddrinfo(self, host, port, *,
-                    family=0, type=0, proto=0, flags=0):
-        if self._debug:
-            return self.run_in_executor(None, self._getaddrinfo_debug,
-                                        host, port, family, type, proto, flags)
-        else:
-            return self.run_in_executor(None, socket.getaddrinfo,
-                                        host, port, family, type, proto, flags)
-
-    def getnameinfo(self, sockaddr, flags=0):
-        return self.run_in_executor(None, socket.getnameinfo, sockaddr, flags)
-
-    def _log_subprocess(self, msg, stdin, stdout, stderr):
-        info = [msg]
-        if stdin is not None:
-            info.append('stdin=%s' % _format_pipe(stdin))
-        if stdout is not None and stderr == subprocess.STDOUT:
-            info.append('stdout=stderr=%s' % _format_pipe(stdout))
-        else:
-            if stdout is not None:
-                info.append('stdout=%s' % _format_pipe(stdout))
-            if stderr is not None:
-                info.append('stderr=%s' % _format_pipe(stderr))
-        logger.debug(' '.join(info))
 
     def get_exception_handler(self):
         """Return an exception handler, or None if the default one is in use.

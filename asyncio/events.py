@@ -1,7 +1,7 @@
 """Event loop and event loop policy."""
 
 __all__ = ['AbstractEventLoopPolicy',
-           'AbstractEventLoop', 'AbstractServer',
+           'AbstractEventLoop',
            'Handle', 'TimerHandle',
            'get_event_loop_policy', 'set_event_loop_policy',
            'get_event_loop', 'set_event_loop', 'new_event_loop',
@@ -17,23 +17,6 @@ import subprocess
 import sys
 import threading
 import traceback
-
-from asyncio import compat
-
-
-def _get_function_source(func):
-    if compat.PY34:
-        func = inspect.unwrap(func)
-    elif hasattr(func, '__wrapped__'):
-        func = func.__wrapped__
-    if inspect.isfunction(func):
-        code = func.__code__
-        return (code.co_filename, code.co_firstlineno)
-    if isinstance(func, functools.partial):
-        return _get_function_source(func.func)
-    if compat.PY34 and isinstance(func, functools.partialmethod):
-        return _get_function_source(func.func)
-    return None
 
 
 def _format_args_and_kwargs(args, kwargs):
@@ -70,9 +53,6 @@ def _format_callback(func, args, kwargs, suffix=''):
 
 def _format_callback_source(func, args):
     func_repr = _format_callback(func, args, None)
-    source = _get_function_source(func)
-    if source:
-        func_repr += ' at %s:%s' % source
     return func_repr
 
 
@@ -237,10 +217,6 @@ class AbstractEventLoop:
         """
         raise NotImplementedError
 
-    def shutdown_asyncgens(self):
-        """Shutdown all active asynchronous generators."""
-        raise NotImplementedError
-
     # Methods scheduling callbacks.  All these return Handles.
 
     def _timer_handle_cancelled(self, handle):
@@ -276,79 +252,6 @@ class AbstractEventLoop:
         raise NotImplementedError
 
     def set_default_executor(self, executor):
-        raise NotImplementedError
-
-    # Network I/O methods returning Futures.
-
-    def getaddrinfo(self, host, port, *, family=0, type=0, proto=0, flags=0):
-        raise NotImplementedError
-
-    def getnameinfo(self, sockaddr, flags=0):
-        raise NotImplementedError
-
-    def create_unix_connection(self, protocol_factory, path, *,
-                               ssl=None, sock=None,
-                               server_hostname=None):
-        raise NotImplementedError
-
-    def create_unix_server(self, protocol_factory, path, *,
-                           sock=None, backlog=100, ssl=None):
-        """A coroutine which creates a UNIX Domain Socket server.
-
-        The return value is a Server object, which can be used to stop
-        the service.
-
-        path is a str, representing a file systsem path to bind the
-        server socket to.
-
-        sock can optionally be specified in order to use a preexisting
-        socket object.
-
-        backlog is the maximum number of queued connections passed to
-        listen() (defaults to 100).
-
-        ssl can be set to an SSLContext to enable SSL over the
-        accepted connections.
-        """
-        raise NotImplementedError
-
-    # Ready-based callback registration methods.
-    # The add_*() methods return None.
-    # The remove_*() methods return True if something was removed,
-    # False if there was nothing to delete.
-
-    def add_reader(self, fd, callback, *args):
-        raise NotImplementedError
-
-    def remove_reader(self, fd):
-        raise NotImplementedError
-
-    def add_writer(self, fd, callback, *args):
-        raise NotImplementedError
-
-    def remove_writer(self, fd):
-        raise NotImplementedError
-
-    # Completion based I/O methods returning Futures.
-
-    def sock_recv(self, sock, nbytes):
-        raise NotImplementedError
-
-    def sock_sendall(self, sock, data):
-        raise NotImplementedError
-
-    def sock_connect(self, sock, address):
-        raise NotImplementedError
-
-    def sock_accept(self, sock):
-        raise NotImplementedError
-
-    # Signal handling.
-
-    def add_signal_handler(self, sig, callback, *args):
-        raise NotImplementedError
-
-    def remove_signal_handler(self, sig):
         raise NotImplementedError
 
     # Task factory.
